@@ -1,0 +1,19 @@
+# Build output
+bin/
+obj/
+artifacts/
+
+# Test results
+TestResults/
+*.trx
+
+# IDE
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+
+# Packages
+*.nupkg
+*.snupkg

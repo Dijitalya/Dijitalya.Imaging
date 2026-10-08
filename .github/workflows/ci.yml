@@ -1,0 +1,86 @@
+name: CI
+
+# Every push and pull request is built, tested and packed. A tag such as v1.2.3 also publishes version 1.2.3
+# to nuget.org through Trusted Publishing: no API key is stored in the repository, the publish job exchanges
+# its GitHub identity token for a NuGet key that is valid for one hour.
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      # A tag gives the release version; any other build is a prerelease of the version in the project file.
+      - name: Version
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            base="$(dotnet msbuild src/Dijitalya.Imaging/Dijitalya.Imaging.csproj -getProperty:Version)"
+            version="${base}-ci.${GITHUB_RUN_NUMBER}"
+          fi
+          echo "PACKAGE_VERSION=$version" >> "$GITHUB_ENV"
+          echo "Version: $version"
+
+      - run: dotnet restore
+
+      - run: dotnet build --no-restore --configuration Release -p:Version="$PACKAGE_VERSION"
+
+      - run: dotnet test --no-build --configuration Release --logger trx
+
+      - run: dotnet pack src/Dijitalya.Imaging/Dijitalya.Imaging.csproj --no-build --configuration Release -p:Version="$PACKAGE_VERSION" --output artifacts
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results
+          path: '**/TestResults/*.trx'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packages
+          path: artifacts/*
+
+  publish:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    # Required reviewers can be added to this environment in the repository settings to approve each release.
+    environment: nuget
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: packages
+          path: artifacts
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      # NUGET_USER is the nuget.org profile name (not the e-mail address) of the account that owns the package.
+      - name: NuGet login
+        uses: NuGet/login@v1
+        id: login
+        with:
+          user: ${{ secrets.NUGET_USER }}
+
+      # The symbol package (.snupkg) next to each .nupkg is pushed with it.
+      - name: Push to nuget.org
+        run: dotnet nuget push "artifacts/*.nupkg" --api-key "${{ steps.login.outputs.NUGET_API_KEY }}" --source https://api.nuget.org/v3/index.json --skip-duplicate

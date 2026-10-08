@@ -1,0 +1,62 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Image codecs and processing written in plain C#, with no package references and no native code.
+
+    Decoding: JPEG (baseline and progressive), PNG, GIF, BMP and WebP (lossy, lossless, alpha, the first
+    frame of an animation). Encoding: JPEG, PNG, WebP (lossy, with lossless alpha), GIF and BMP. Also:
+    reading the size from the header alone, keeping ICC colour profiles, EXIF orientation, resizing,
+    rotating, flipping and cropping.
+
+    Decoders read untrusted input, so every one of them bounds-checks it, refuses pictures above
+    ImageLimits before allocating for them, and reports a malformed file as InvalidImageContentException
+    rather than failing in some other way.
+  -->
+
+  <PropertyGroup>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <!-- NU1900 only means the vulnerability feed could not be reached; that should not fail a build. -->
+    <WarningsNotAsErrors>$(WarningsNotAsErrors);NU1900</WarningsNotAsErrors>
+    <!-- Every public member is documented; the documentation ships with the package for IntelliSense. -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <!-- No reflection and no dynamic code: the trimming and AOT analyzers keep it that way. -->
+    <IsAotCompatible>true</IsAotCompatible>
+  </PropertyGroup>
+
+  <PropertyGroup Label="Package">
+    <IsPackable>true</IsPackable>
+    <PackageId>Dijitalya.Imaging</PackageId>
+    <!-- The version of a local build. CI overrides it with the version of the release tag (v1.2.3 gives 1.2.3). -->
+    <Version>1.0.0</Version>
+    <Description>Image codecs and processing in pure C# with no dependencies and no native code. Decodes JPEG, PNG, GIF, BMP and WebP (lossy, lossless, alpha, the first frame of animations); encodes JPEG, PNG, WebP, GIF and BMP. Reads picture sizes from headers, keeps ICC colour profiles, applies EXIF orientation, resizes, rotates, flips and crops. Hardened for untrusted uploads.</Description>
+    <PackageTags>image;imaging;jpeg;jpg;png;gif;bmp;webp;resize;thumbnail;exif;icc;codec;decoder;encoder</PackageTags>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
+    <PackageReleaseNotes>See CHANGELOG.md in the repository.</PackageReleaseNotes>
+
+    <!-- Source Link: the repository address comes from the git remote, and debuggers can step into the source. -->
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+
+    <!--
+      Checks the package on every pack. After the first release, set PackageValidationBaselineVersion to the
+      last published version so that a breaking change to the public API fails the build.
+    -->
+    <EnablePackageValidation>true</EnablePackageValidation>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" Visible="false" />
+    <None Include="..\..\LICENSE" Pack="true" PackagePath="\" Visible="false" />
+    <None Include="..\..\THIRD-PARTY-NOTICES.md" Pack="true" PackagePath="\" Visible="false" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The codec internals (bit readers, checksums, transforms) are tested directly. -->
+    <InternalsVisibleTo Include="Dijitalya.Imaging.Tests" />
+  </ItemGroup>
+
+</Project>
