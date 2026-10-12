@@ -26,21 +26,21 @@ internal sealed class Vp8Decoder
         12 * Stride, (12 * Stride) + 4, (12 * Stride) + 8, (12 * Stride) + 12,
     ];
 
-    private readonly byte[] _coefficientProbabilities = new byte[Vp8Tables.CoefficientProbabilities.Length];
+    private readonly byte[] _coefficientProbabilities = DecodeContext.Allocate<byte>(checked(Vp8Tables.CoefficientProbabilities.Length));
     private readonly int[] _segmentProbabilities = [255, 255, 255];
     private readonly Vp8QuantMatrix[] _quantizers = new Vp8QuantMatrix[Segments];
     private readonly Vp8FilterStrength[,] _filterStrengths = new Vp8FilterStrength[Segments, 2];
-    private readonly short[] _secondOrder = new short[16];
+    private readonly short[] _secondOrder = DecodeContext.Allocate<short>(checked(16));
     private readonly Vp8MacroblockData _block = new();
-    private readonly byte[] _work = new byte[WorkBufferSize];
+    private readonly byte[] _work = DecodeContext.Allocate<byte>(checked(WorkBufferSize));
 
     private Vp8BoolDecoder _header = null!;
     private Vp8BoolDecoder[] _partitions = [];
     private bool _useSegments;
     private bool _updateSegmentMap;
     private bool _absoluteSegmentValues = true;
-    private readonly int[] _segmentQuantizer = new int[Segments];
-    private readonly int[] _segmentFilterLevel = new int[Segments];
+    private readonly int[] _segmentQuantizer = DecodeContext.Allocate<int>(checked(Segments));
+    private readonly int[] _segmentFilterLevel = DecodeContext.Allocate<int>(checked(Segments));
     private bool _useSkipProbability;
     private int _skipProbability;
     private int _filterType;
@@ -53,7 +53,7 @@ internal sealed class Vp8Decoder
     // Prediction contexts: the 4x4 modes above each macroblock column and left of the current one,
     // and the "has coefficients" flags the token contexts use.
     private byte[] _modesTop = [];
-    private readonly byte[] _modesLeft = new byte[4];
+    private readonly byte[] _modesLeft = DecodeContext.Allocate<byte>(checked(4));
     private uint[] _nonZeroTop = [];
     private uint[] _nonZeroDcTop = [];
     private uint _nonZeroLeft;
@@ -370,19 +370,20 @@ internal sealed class Vp8Decoder
         _macroblocksHigh = (_height + 15) >> 4;
         _strideY = _macroblocksWide * 16;
         _strideUv = _macroblocksWide * 8;
-        _planeY = new byte[_strideY * _macroblocksHigh * 16];
-        _planeU = new byte[_strideUv * _macroblocksHigh * 8];
-        _planeV = new byte[_strideUv * _macroblocksHigh * 8];
-        _modesTop = new byte[_macroblocksWide * 4];
-        _nonZeroTop = new uint[_macroblocksWide];
-        _nonZeroDcTop = new uint[_macroblocksWide];
-        _topY = new byte[_macroblocksWide * 16];
-        _topU = new byte[_macroblocksWide * 8];
-        _topV = new byte[_macroblocksWide * 8];
-        _filterInfo = new byte[_macroblocksWide * _macroblocksHigh];
+        _planeY = DecodeContext.Allocate<byte>(checked(_strideY * _macroblocksHigh * 16));
+        _planeU = DecodeContext.Allocate<byte>(checked(_strideUv * _macroblocksHigh * 8));
+        _planeV = DecodeContext.Allocate<byte>(checked(_strideUv * _macroblocksHigh * 8));
+        _modesTop = DecodeContext.Allocate<byte>(checked(_macroblocksWide * 4));
+        _nonZeroTop = DecodeContext.Allocate<uint>(checked(_macroblocksWide));
+        _nonZeroDcTop = DecodeContext.Allocate<uint>(checked(_macroblocksWide));
+        _topY = DecodeContext.Allocate<byte>(checked(_macroblocksWide * 16));
+        _topU = DecodeContext.Allocate<byte>(checked(_macroblocksWide * 8));
+        _topV = DecodeContext.Allocate<byte>(checked(_macroblocksWide * 8));
+        _filterInfo = DecodeContext.Allocate<byte>(checked(_macroblocksWide * _macroblocksHigh));
 
         for (var mbY = 0; mbY < _macroblocksHigh; mbY++)
         {
+            DecodeContext.Checkpoint();
             var tokens = _partitions[mbY & (_partitions.Length - 1)];
 
             Array.Clear(_modesLeft);
@@ -803,6 +804,7 @@ internal sealed class Vp8Decoder
 
         for (var mbY = 0; mbY < _macroblocksHigh; mbY++)
         {
+            DecodeContext.Checkpoint();
             for (var mbX = 0; mbX < _macroblocksWide; mbX++)
             {
                 var info = _filterInfo[(mbY * _macroblocksWide) + mbX];

@@ -131,7 +131,7 @@ public static class ImageTransforms
     {
         ArgumentNullException.ThrowIfNull(source);
 
-        if (x < 0 || y < 0 || width <= 0 || height <= 0 || x + width > source.Width || y + height > source.Height)
+        if (x < 0 || y < 0 || width <= 0 || height <= 0 || (long)x + width > source.Width || (long)y + height > source.Height)
             throw new ArgumentOutOfRangeException(nameof(width), "The rectangle must lie inside the picture.");
 
         var result = new RasterImage(width, height);

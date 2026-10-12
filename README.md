@@ -3,8 +3,8 @@
 [![NuGet](https://img.shields.io/nuget/v/Dijitalya.Imaging.svg)](https://www.nuget.org/packages/Dijitalya.Imaging)
 
 Image codecs and processing for .NET, in pure C#: no package dependencies, no native libraries, no
-`System.Drawing`. It runs the same on Windows, Linux, macOS and in containers, and is compatible with
-trimming and Native AOT.
+`System.Drawing`. It targets Windows, Linux, macOS and containers. CI is configured to test all three desktop
+operating systems and publish and run a trimmed Native AOT smoke executable on each.
 
 It is built for the job most web applications have: take a picture someone uploaded, check it,
 turn it upright, make smaller copies of it and save them as JPEG, PNG or WebP.
@@ -27,7 +27,8 @@ Requires .NET 10 or later.
 | GIF | 87a and 89a, the first frame, transparency, interlacing | A still picture; more than 256 colours are reduced by median cut with Floyd-Steinberg dithering |
 | BMP | Windows and OS/2 headers, 1 to 32 bits per pixel, RLE4, RLE8 and bit fields | 24-bit, or 32-bit with alpha when the picture has transparency |
 
-The decoded WebP pixels are identical to libwebp's.
+WebP regression tests compare selected decoded pictures with libwebp reference pixel hashes.
+This is evidence for those fixtures, not a guarantee for every possible WebP file.
 
 ## Usage
 
@@ -106,24 +107,81 @@ var png = ImageCodec.Encode(image, ImageFormat.Png);
 
 ## Untrusted input
 
-The decoders are written to read files from strangers:
+Decoding is strict by default. Strict mode rejects incomplete pixel data and applies format-specific
+structural checks, including PNG chunk CRCs, chunk order, end markers and the zlib checksum; JPEG
+entropy exhaustion and missing end markers; GIF incomplete LZW data; and BMP truncated rows or
+invalid run lengths. It is not a general-purpose validator for every optional feature in every format.
+Animated formats still return only the documented first/default picture.
 
-- Every length, offset and table index in a file is checked before it is used.
-- The size a file claims is compared with `ImageLimits` (at most 32768 pixels a side and 64 megapixels)
-  before any memory is allocated for it, so a small file claiming an enormous picture is refused.
-  `DecodeAsync` also refuses streams longer than `ImageLimits.MaxFileSize`.
-- `DecodeAsync` checks the first bytes before reading the rest, so a file that is not a picture is turned
-  away without being loaded.
-- Whatever is wrong with a file, the caller gets one of two exceptions:
-  `UnknownImageFormatException` (not a picture in a supported format) or `InvalidImageContentException`
-  (damaged, unsupported or too large).
+Use per-operation limits appropriate to your service:
 
-The test suite feeds every decoder hundreds of damaged files (flipped bytes, cut-off data, inserted
-garbage) and checks that each one fails with one of these two exceptions.
+```csharp
+var options = new ImageDecodeOptions
+{
+    MaxFileSize = 20 * 1024 * 1024,
+    MaxPixelCount = 12_000_000,
+    MaxDimension = 8192,
+    MaxAllocationBytes = 192L * 1024 * 1024,
+    MaxMetadataBytes = 1024 * 1024,
+    MaxJpegScans = 256,
+    Strict = true,
+};
 
-Writing a picture never copies EXIF or other metadata from its source, so re-encoding an upload removes
-its GPS location, camera details and comments. Only an ICC colour profile is written, and only when
-it is passed in.
+using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+var decoded = await ImageCodec.DecodeAsync(upload, options, timeout.Token);
+var thumbnail = ImageResizer.ResizeToBox(decoded.Image, 300, 300, ResizeMode.Crop, timeout.Token);
+```
+
+The options overload of `DecodeAsync` requires the third cancellation argument; pass
+`CancellationToken.None` when cancellation is not needed. This keeps the existing
+`DecodeAsync(stream, default)` call unambiguous. Existing overloads remain available.
+
+- The global ceilings are 32768 pixels per side, 64 * 1024 * 1024 pixels, and 272 MiB of file content.
+  Callers can set lower input and image limits. Both byte-array and stream APIs enforce the file limit.
+- The default allocation budget is 512 MiB. It accounts conservatively for input and decoder array
+  buffers, including buffers no longer needed. For non-seekable streams it also accounts for the
+  retained input-buffer capacity. It is not a process working-set limit: small objects, object headers,
+  pool retention and runtime/decompressor overhead are not included. Bound request concurrency too.
+- ICC profiles have a separate 16 MiB default ceiling. JPEG scan counts are limited independently.
+- Cancellation is cooperative during input reads and decoder processing. It is not a hard deadline;
+  one bounded loop/native decompressor call can complete before the next checkpoint. Encoding has
+  no cancellation overload. Async decoding performs CPU work synchronously after reading the input.
+- Content failures use `UnknownImageFormatException` or `InvalidImageContentException`. Cancellation,
+  invalid API arguments, stream I/O failures and process-wide memory exhaustion remain distinct.
+- PNG pixel rows are inflated directly from the input IDAT segments. No full inflated pixel-data copy
+  or concatenated IDAT copy is allocated. Seekable streams use one exact-length input buffer.
+- `Identify` reads dimensions only; it does not validate the full file or approve an upload.
+
+For an explicit best-effort recovery workflow, use `new ImageDecodeOptions { Strict = false }`.
+This permits some incomplete pictures to decode; it does not disable size, allocation or metadata
+limits, and not every damaged file can be recovered. Strict defaults can reject damaged files that
+older versions accepted; select recovery mode deliberately if that behavior is required.
+
+Encoding does not copy source EXIF, GPS, camera details or comments. An ICC profile is written only
+when explicitly passed. A profile is preserved, not used to perform a color-space conversion.
+
+## Processing and performance
+
+Resizing uses a separable bicubic filter with premultiplied alpha, selects the first axis from the
+image dimensions and bounds the float row cache to 16 MiB. Scratch arrays are rented and cleared
+before returning to the shared pool. Vector operations accelerate weighted accumulation when
+supported by the runtime. Different pass orders or hardware can introduce small rounding differences.
+
+Crop samples the center window of the virtual resized picture directly, so discarded pixels do not
+require an intermediate image. Output pixels and sampling maps are additional to the row-cache bound.
+Resize cancellation overloads preserve the original source image; callers must not mutate its public
+pixel array concurrently with any operation reading it.
+
+Performance improvements are architectural changes until measured on your workload. Run the included
+benchmark on the same machine, runtime, build configuration and inputs for both versions:
+
+```sh
+dotnet run --project tools/Imaging.Validation --configuration Release -- --benchmark 10
+```
+
+It reports median/p95 time and per-thread managed allocated bytes after warm-up. It does not measure
+peak resident memory or establish a speedup against another library. Record those separately for
+production capacity planning. No measured speedup is claimed in this source update.
 
 ## Building from source
 
@@ -133,7 +191,17 @@ dotnet test
 dotnet pack src/Dijitalya.Imaging --configuration Release --output artifacts
 ```
 
-The SDK version is pinned in `global.json`.
+The SDK version is pinned in `global.json`. Run the complete local build/test/smoke/benchmark/package
+sequence with `pwsh -File tools/verify.ps1` on Windows or `bash tools/verify.sh` on Unix.
+
+Independent fixtures live in `tests/Dijitalya.Imaging.Tests/Fixtures`; regeneration uses Pillow and
+ImageMagick via `python tools/generate_fixtures.py`. These tools are not dependencies of the library.
+CI also opens this library's encoded output with Pillow to check interoperability in the other direction.
+
+The weekly mutation workflow uses 10,000 mutations per format, bounded decoder limits, a test-host
+hang timeout and a job timeout. These are deterministic mutation tests, not exhaustive or
+coverage-guided fuzzing. Native AOT, operating-system and benchmark checks must actually pass before
+a release is considered validated. See `VALIDATION.md` for the status of this delivery.
 
 ## Releasing
 

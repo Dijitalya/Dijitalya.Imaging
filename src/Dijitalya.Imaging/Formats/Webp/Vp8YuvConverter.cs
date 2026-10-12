@@ -14,6 +14,7 @@ internal static class Vp8YuvConverter
 
         for (var y = 1; y + 1 < height; y += 2)
         {
+            DecodeContext.Checkpoint();
             var topChroma = ((y - 1) >> 1) * chromaStride;
             var bottomChroma = ((y + 1) >> 1) * chromaStride;
             UpsampleLinePair(luma, y * lumaStride, (y + 1) * lumaStride, u, v, topChroma, bottomChroma, rgba, y * width * 4, (y + 1) * width * 4, width);

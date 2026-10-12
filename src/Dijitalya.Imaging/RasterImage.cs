@@ -24,7 +24,7 @@ public sealed class RasterImage
 
         Width = width;
         Height = height;
-        Pixels = pixels ?? new byte[length];
+        Pixels = pixels ?? DecodeContext.Allocate<byte>(length);
     }
 
     /// <summary>The width in pixels.</summary>

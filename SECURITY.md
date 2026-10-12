@@ -14,3 +14,13 @@ CHANGELOG.md.
 ## Supported versions
 
 Only the latest released version receives security fixes.
+
+## Operational limits
+
+Use `ImageDecodeOptions` to set limits below the global ceilings for your workload. The allocation
+budget covers accounted buffers, not process working set, native runtime overhead or the sum of
+concurrent requests. Enforce service-level concurrency and request timeouts separately. Cancellation
+is cooperative. Keep strict mode enabled for uploads; tolerant mode is for deliberate recovery.
+
+A passing mutation suite does not prove that every malformed input is safe. Retain regression files
+for confirmed failures and run the platform, interoperability and Native AOT checks before release.

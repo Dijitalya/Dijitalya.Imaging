@@ -108,13 +108,13 @@ internal static class ImageHeaderReader
 
     private static (int Width, int Height)? ReadWebp(ReadOnlySpan<byte> data)
     {
-        if (data.Length < 30)
+        if (data.Length < 20)
             return null;
 
         var tag = data.Slice(12, 4);
         var payload = 20;
 
-        if (tag.SequenceEqual("VP8X"u8))
+        if (tag.SequenceEqual("VP8X"u8) && data.Length >= 30)
         {
             var width = 1 + (data[payload + 4] | (data[payload + 5] << 8) | (data[payload + 6] << 16));
             var height = 1 + (data[payload + 7] | (data[payload + 8] << 8) | (data[payload + 9] << 16));
@@ -124,7 +124,8 @@ internal static class ImageHeaderReader
 
         try
         {
-            var bytes = data[payload..].ToArray();
+            // A header probe must never copy the compressed image payload.
+            var bytes = data.Slice(payload, Math.Min(10, data.Length - payload)).ToArray();
 
             if (tag.SequenceEqual("VP8 "u8))
                 return Vp8Decoder.ReadSize(bytes, 0, bytes.Length);

@@ -20,7 +20,7 @@ internal static class PngDecoder
     internal const int TruecolorAlpha = 6;
 
     // Real profiles are a few hundred kilobytes at most; this only stops a decompression bomb.
-    private const int MaxIccProfileSize = 16 * 1024 * 1024;
+    private static int MaxIccProfileSize => DecodeContext.MaxMetadataBytes;
 
     // Adam7: the first column and row, and the step, of each of the seven passes.
     private static readonly int[] PassStartX = [0, 4, 0, 2, 0, 1, 0];
@@ -37,16 +37,22 @@ internal static class PngDecoder
         int[]? transparentSample = null;
         var orientation = 1;
         byte[]? iccProfile = null;
-        var compressed = new MemoryStream();
+        var segments = new List<(int Offset, int Length)>();
+        var hasEnd = false;
+        var hasData = false;
+        var dataEnded = false;
         var position = 8;
 
         while (position + 12 <= data.Length)
         {
+            DecodeContext.Checkpoint();
             var length = BinaryPrimitives.ReadUInt32BigEndian(data.AsSpan(position, 4));
 
             if (length > (uint)(data.Length - position - 12))
             {
-                // A truncated last chunk: what was read so far is decoded, as browsers do.
+                if (DecodeContext.Strict)
+                    throw new InvalidImageContentException("A PNG chunk is truncated.");
+                // Best-effort recovery is available only when explicitly requested.
                 break;
             }
 
@@ -54,7 +60,7 @@ internal static class PngDecoder
             var body = data.AsSpan(position + 8, (int)length);
             var isCritical = (type[0] & 0x20) == 0;
 
-            if (isCritical)
+            if (isCritical || DecodeContext.Strict)
             {
                 var expected = BinaryPrimitives.ReadUInt32BigEndian(data.AsSpan(position + 8 + (int)length, 4));
 
@@ -62,10 +68,15 @@ internal static class PngDecoder
                     throw new InvalidImageContentException("A PNG chunk fails its checksum.");
             }
 
+            var payloadOffset = position + 8;
             position += (int)length + 12;
+            if (hasData && !type.SequenceEqual("IDAT"u8))
+                dataEnded = true;
 
             if (type.SequenceEqual("IHDR"u8))
             {
+                if (DecodeContext.Strict && (hasHeader || body.Length != 13))
+                    throw new InvalidImageContentException("The PNG must contain one 13-byte IHDR chunk.");
                 header = ReadHeader(body);
                 hasHeader = true;
             }
@@ -75,16 +86,23 @@ internal static class PngDecoder
             }
             else if (type.SequenceEqual("PLTE"u8))
             {
+                if (DecodeContext.Strict && (hasData || palette is not null || header.ColorType is Grayscale or GrayscaleAlpha))
+                    throw new InvalidImageContentException("The PNG palette is duplicated, misplaced or unsupported.");
                 if (body.Length % 3 != 0 || body.Length == 0 || body.Length > 768)
                     throw new InvalidImageContentException("The PNG palette is malformed.");
 
-                palette = body.ToArray();
+                palette = DecodeContext.Copy(body);
             }
             else if (type.SequenceEqual("tRNS"u8))
             {
+                if (DecodeContext.Strict && (hasData || paletteAlpha is not null || transparentSample is not null))
+                    throw new InvalidImageContentException("The PNG transparency chunk is misplaced or duplicated.");
+                if (DecodeContext.Strict && !(header.ColorType == Indexed && palette is not null && body.Length > 0 && body.Length <= palette.Length / 3
+                    || header.ColorType == Grayscale && body.Length == 2 || header.ColorType == Truecolor && body.Length == 6))
+                    throw new InvalidImageContentException("The PNG transparency chunk is invalid.");
                 if (header.ColorType == Indexed)
                 {
-                    paletteAlpha = body.ToArray();
+                    paletteAlpha = DecodeContext.Copy(body);
                 }
                 else if (header.ColorType == Grayscale && body.Length >= 2)
                 {
@@ -102,7 +120,11 @@ internal static class PngDecoder
             }
             else if (type.SequenceEqual("IDAT"u8))
             {
-                compressed.Write(body);
+                if (DecodeContext.Strict && (dataEnded || header.ColorType == Indexed && palette is null))
+                    throw new InvalidImageContentException("The PNG image data is out of order.");
+                hasData = true;
+                DecodeContext.Charge(32); // Segment storage, including list growth.
+                segments.Add((payloadOffset, body.Length));
             }
             else if (type.SequenceEqual("eXIf"u8))
             {
@@ -114,24 +136,33 @@ internal static class PngDecoder
             }
             else if (type.SequenceEqual("IEND"u8))
             {
+                if (DecodeContext.Strict && body.Length != 0)
+                    throw new InvalidImageContentException("The PNG end chunk is invalid.");
+                hasEnd = true;
                 break;
+            }
+            else if (isCritical && DecodeContext.Strict)
+            {
+                throw new InvalidImageContentException("The PNG contains an unknown critical chunk.");
             }
         }
 
-        if (!hasHeader || compressed.Length == 0)
+        if (DecodeContext.Strict && !hasEnd)
+            throw new InvalidImageContentException("The PNG is missing its end chunk.");
+        if (!hasHeader || !hasData)
             throw new InvalidImageContentException("The PNG has no image data.");
 
         if (header.ColorType == Indexed && palette is null)
             throw new InvalidImageContentException("The indexed PNG has no palette.");
 
-        var raw = Inflate(compressed, RawLength(header));
+        using var compressed = new PngDataStream(data, segments);
+        using var inflater = new ZLibStream(compressed, CompressionMode.Decompress);
+        var reader = new PixelDataReader(inflater, data, segments);
         var image = new RasterImage(header.Width, header.Height);
         var writer = new PngPixelWriter(header, palette, paletteAlpha, transparentSample);
 
         if (header.Interlaced)
         {
-            var offset = 0;
-
             for (var pass = 0; pass < 7; pass++)
             {
                 var passWidth = PassLength(header.Width, PassStartX[pass], PassStepX[pass]);
@@ -140,14 +171,15 @@ internal static class PngDecoder
                 if (passWidth == 0 || passHeight == 0)
                     continue;
 
-                offset = DecodePass(raw, offset, passWidth, passHeight, writer, image, PassStartX[pass], PassStartY[pass], PassStepX[pass], PassStepY[pass]);
+                DecodePass(reader, passWidth, passHeight, writer, image, PassStartX[pass], PassStartY[pass], PassStepX[pass], PassStepY[pass]);
             }
         }
         else
         {
-            DecodePass(raw, 0, header.Width, header.Height, writer, image, 0, 0, 1, 1);
+            DecodePass(reader, header.Width, header.Height, writer, image, 0, 0, 1, 1);
         }
 
+        reader.Complete();
         return new DecodedImage(image, ImageFormat.Png, orientation, iccProfile);
     }
 
@@ -162,18 +194,19 @@ internal static class PngDecoder
 
         try
         {
-            using var input = new MemoryStream(body[(nameEnd + 2)..].ToArray());
+            using var input = new MemoryStream(DecodeContext.Copy(body[(nameEnd + 2)..]));
             using var zlib = new ZLibStream(input, CompressionMode.Decompress);
             using var output = new MemoryStream();
-            var buffer = new byte[16384];
+            var buffer = DecodeContext.Allocate<byte>(16384);
             int read;
 
             while ((read = zlib.Read(buffer, 0, buffer.Length)) > 0)
             {
+                DecodeContext.Checkpoint();
+                if (output.Length + read > MaxIccProfileSize)
+                    throw new InvalidImageContentException("The PNG colour profile exceeds the metadata limit.");
+                DecodeContext.Charge(read * 3L);
                 output.Write(buffer, 0, read);
-
-                if (output.Length > MaxIccProfileSize)
-                    return null;
             }
 
             return IccProfiles.RgbOrNull(output.ToArray());
@@ -218,83 +251,96 @@ internal static class PngDecoder
         return new PngHeader((int)width, (int)height, bitDepth, colorType, channels, body[12] == 1);
     }
 
-    private static long RawLength(PngHeader header)
-    {
-        if (!header.Interlaced)
-            return (long)header.Height * (1 + RowLength(header, header.Width));
-
-        long total = 0;
-
-        for (var pass = 0; pass < 7; pass++)
-        {
-            var passWidth = PassLength(header.Width, PassStartX[pass], PassStepX[pass]);
-            var passHeight = PassLength(header.Height, PassStartY[pass], PassStepY[pass]);
-
-            if (passWidth > 0 && passHeight > 0)
-                total += (long)passHeight * (1 + RowLength(header, passWidth));
-        }
-
-        return total;
-    }
-
     private static int RowLength(PngHeader header, int width) => (int)((((long)width * header.Channels * header.BitDepth) + 7) / 8);
 
     private static int PassLength(int length, int start, int step) => length <= start ? 0 : ((length - start + step - 1) / step);
 
-    /// <summary>
-    /// Inflates exactly the bytes the picture needs and no more, so a stream that inflates to far
-    /// more than it should (a decompression bomb) costs nothing. A stream that ends early leaves the
-    /// rest of the picture empty, as browsers show it.
-    /// </summary>
-    private static byte[] Inflate(MemoryStream compressed, long length)
+    // Read one row at a time. A truncated stream is recoverable only in tolerant mode.
+    private sealed class PixelDataReader(ZLibStream inflater, byte[] data, IReadOnlyList<(int Offset, int Length)> segments)
     {
-        if (length > int.MaxValue)
-            throw new InvalidImageContentException("The PNG is too large.");
+        private bool _ended;
+        private long _read;
+        private uint _adlerA = 1;
+        private uint _adlerB;
 
-        var raw = new byte[length];
-        compressed.Position = 0;
-
-        using var inflater = new ZLibStream(compressed, CompressionMode.Decompress);
-        var filled = 0;
-
-        try
+        public void Read(Span<byte> destination)
         {
-            while (filled < raw.Length)
+            destination.Clear();
+            var filled = 0;
+            while (!_ended && filled < destination.Length)
             {
-                var read = inflater.Read(raw, filled, raw.Length - filled);
-
-                if (read == 0)
+                DecodeContext.Checkpoint();
+                int count;
+                try { count = inflater.Read(destination[filled..]); }
+                catch (InvalidDataException) when (!DecodeContext.Strict && _read > 0) { count = 0; }
+                if (count == 0)
+                {
+                    _ended = true;
+                    if (DecodeContext.Strict)
+                        throw new InvalidImageContentException("The PNG pixel data is truncated.");
                     break;
-
-                filled += read;
+                }
+                if (DecodeContext.Strict)
+                {
+                    var bytes = destination.Slice(filled, count);
+                    while (!bytes.IsEmpty)
+                    {
+                        var block = bytes[..Math.Min(bytes.Length, 5552)];
+                        foreach (var value in block)
+                        {
+                            _adlerA += value;
+                            _adlerB += _adlerA;
+                        }
+                        _adlerA %= 65521;
+                        _adlerB %= 65521;
+                        bytes = bytes[block.Length..];
+                    }
+                }
+                filled += count;
+                _read += count;
             }
         }
-        catch (InvalidDataException) when (filled > 0)
+
+        public void Complete()
         {
-            // Damaged data after a readable part: keep the part.
+            if (_read == 0)
+                throw new InvalidImageContentException("The PNG has no readable pixel data.");
+            if (DecodeContext.Strict)
+            {
+                if (inflater.ReadByte() != -1)
+                    throw new InvalidImageContentException("The PNG contains excess decompressed pixel data.");
+                Span<byte> trailer = stackalloc byte[4];
+                var remaining = 4;
+                for (var index = segments.Count - 1; index >= 0 && remaining > 0; index--)
+                {
+                    var segment = segments[index];
+                    var count = Math.Min(remaining, segment.Length);
+                    data.AsSpan(segment.Offset + segment.Length - count, count).CopyTo(trailer.Slice(remaining - count, count));
+                    remaining -= count;
+                }
+                if (remaining != 0 || BinaryPrimitives.ReadUInt32BigEndian(trailer) != (_adlerB << 16 | _adlerA))
+                    throw new InvalidImageContentException("The PNG zlib checksum is missing or invalid.");
+            }
         }
-
-        if (filled == 0)
-            throw new InvalidImageContentException("The PNG image data cannot be inflated.");
-
-        return raw;
     }
 
-    private static int DecodePass(
-        byte[] raw, int offset, int width, int height, PngPixelWriter writer, RasterImage image,
+    private static void DecodePass(
+        PixelDataReader reader, int width, int height, PngPixelWriter writer, RasterImage image,
         int startX, int startY, int stepX, int stepY)
     {
         var header = writer.Header;
         var rowLength = RowLength(header, width);
         var bytesPerPixel = Math.Max(1, (header.Channels * header.BitDepth) / 8);
-        var previous = new byte[rowLength];
-        var current = new byte[rowLength];
+        var previous = DecodeContext.Allocate<byte>(rowLength);
+        var current = DecodeContext.Allocate<byte>(rowLength);
+        Span<byte> filterByte = stackalloc byte[1];
 
         for (var row = 0; row < height; row++)
         {
-            var filter = raw[offset];
-            Array.Copy(raw, offset + 1, current, 0, rowLength);
-            offset += rowLength + 1;
+            DecodeContext.Checkpoint();
+            reader.Read(filterByte);
+            var filter = filterByte[0];
+            reader.Read(current);
 
             Unfilter(filter, current, previous, bytesPerPixel);
             writer.WriteRow(current, width, image, startX, startY + (row * stepY), stepX);
@@ -302,7 +348,6 @@ internal static class PngDecoder
             (previous, current) = (current, previous);
         }
 
-        return offset;
     }
 
     private static void Unfilter(byte filter, byte[] row, byte[] previous, int bytesPerPixel)

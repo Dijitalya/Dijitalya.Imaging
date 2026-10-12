@@ -18,13 +18,16 @@ public sealed class DamagedFileTests
         var original = ImageCodec.Encode(SamplePictures.Photo(48, 32, withAlpha: format is not (ImageFormat.Jpeg or ImageFormat.Gif)), format, quality: 80);
         var random = new Random(1234 + (int)format);
 
-        for (var attempt = 0; attempt < 300; attempt++)
+        var attempts = int.TryParse(Environment.GetEnvironmentVariable("IMAGING_FUZZ_ITERATIONS"), out var requested)
+            ? Math.Clamp(requested, 300, 100_000) : 300;
+        var options = new ImageDecodeOptions { MaxPixelCount = 1_048_576, MaxAllocationBytes = 32 * 1024 * 1024 };
+        for (var attempt = 0; attempt < attempts; attempt++)
         {
             var damaged = Damage(original, random);
 
             try
             {
-                ImageCodec.Decode(damaged);
+                ImageCodec.Decode(damaged, options);
             }
             catch (Exception exception)
             {

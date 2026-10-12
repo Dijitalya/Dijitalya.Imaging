@@ -20,10 +20,10 @@ internal static class GifLzwDecoder
         if (minimumCodeSize is < 1 or > 11)
             throw new InvalidImageContentException("The GIF uses an invalid LZW code size.");
 
-        var prefixes = new short[MaxCodes];
-        var suffixes = new byte[MaxCodes];
-        var firsts = new byte[MaxCodes];
-        var stack = new byte[MaxCodes + 1];
+        var prefixes = DecodeContext.Allocate<short>(checked(MaxCodes));
+        var suffixes = DecodeContext.Allocate<byte>(checked(MaxCodes));
+        var firsts = DecodeContext.Allocate<byte>(checked(MaxCodes));
+        var stack = DecodeContext.Allocate<byte>(checked(MaxCodes + 1));
 
         var clearCode = 1 << minimumCodeSize;
         var endCode = clearCode + 1;
@@ -31,6 +31,7 @@ internal static class GifLzwDecoder
         var codeSize = minimumCodeSize + 1;
         var previous = -1;
         var written = 0;
+        var ended = false;
 
         for (var code = 0; code < clearCode; code++)
         {
@@ -43,8 +44,9 @@ internal static class GifLzwDecoder
         var bitCount = 0;
         var position = 0;
 
-        while (written < output.Length)
+        while (DecodeContext.Strict || written < output.Length)
         {
+            DecodeContext.Checkpoint();
             while (bitCount < codeSize && position < data.Length)
             {
                 bitBuffer |= data[position++] << bitCount;
@@ -67,7 +69,12 @@ internal static class GifLzwDecoder
             }
 
             if (code == endCode)
+            {
+                ended = true;
                 break;
+            }
+            if (DecodeContext.Strict && written == output.Length)
+                throw new InvalidImageContentException("The GIF contains excess pixel data.");
 
             if (previous == -1)
             {
@@ -99,6 +106,8 @@ internal static class GifLzwDecoder
             if (length == 0)
                 break;
 
+            if (DecodeContext.Strict && length > output.Length - written)
+                throw new InvalidImageContentException("The GIF contains excess pixel data.");
             var first = stack[0];
 
             for (var index = 0; index < length && written < output.Length; index++)
@@ -118,6 +127,8 @@ internal static class GifLzwDecoder
             previous = code;
         }
 
+        if (DecodeContext.Strict && (!ended || written != output.Length))
+            throw new InvalidImageContentException("The GIF pixel data is incomplete or invalid.");
         return written;
     }
 

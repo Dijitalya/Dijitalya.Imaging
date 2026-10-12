@@ -37,22 +37,28 @@ internal static class WebpAlphaDecoder
             if (length - 1 < (long)width * height)
                 throw new InvalidImageContentException("The WebP alpha chunk is cut off.");
 
-            filtered = data.AsSpan(start + 1, width * height).ToArray();
+            filtered = DecodeContext.Copy(data.AsSpan(start + 1, width * height));
         }
         else
         {
             filtered = Vp8LDecoder.DecodeAlpha(data, start + 1, length - 1, width, height);
         }
 
-        var alpha = new byte[width * height];
+        var alpha = DecodeContext.Allocate<byte>(checked(width * height));
 
         for (var y = 0; y < height; y++)
+        {
+            DecodeContext.Checkpoint();
             Unfilter(filter, filtered, alpha, y, width);
+        }
 
         var pixels = image.Pixels;
 
         for (var index = 0; index < alpha.Length; index++)
+        {
+            if ((index & 4095) == 0) DecodeContext.Checkpoint();
             pixels[(index * 4) + 3] = alpha[index];
+        }
     }
 
     private static void Unfilter(int filter, byte[] input, byte[] output, int y, int width)

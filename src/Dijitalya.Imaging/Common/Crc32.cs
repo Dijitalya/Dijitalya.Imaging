@@ -10,8 +10,14 @@ internal static class Crc32
     /// <summary>Continues a running CRC; start with 0xFFFFFFFF and invert the end result.</summary>
     public static uint Update(uint crc, ReadOnlySpan<byte> data)
     {
-        foreach (var value in data)
-            crc = Table[(crc ^ value) & 0xFF] ^ (crc >> 8);
+        while (!data.IsEmpty)
+        {
+            DecodeContext.Checkpoint();
+            var block = data[..Math.Min(data.Length, 65536)];
+            foreach (var value in block)
+                crc = Table[(crc ^ value) & 0xFF] ^ (crc >> 8);
+            data = data[block.Length..];
+        }
 
         return crc;
     }

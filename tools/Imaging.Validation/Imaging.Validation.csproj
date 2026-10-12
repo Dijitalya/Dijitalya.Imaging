@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <IsPackable>false</IsPackable>
+    <IsAotCompatible>true</IsAotCompatible>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <ImagingProject Condition="'$(ImagingProject)' == ''">../../src/Dijitalya.Imaging/Dijitalya.Imaging.csproj</ImagingProject>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="$(ImagingProject)" />
+  </ItemGroup>
+</Project>

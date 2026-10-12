@@ -78,6 +78,12 @@ internal static class BmpDecoder
 
         ImageLimits.EnsureSize(width, height);
 
+        if (DecodeContext.Strict && (pixelOffset < paletteStart || pixelOffset >= data.Length))
+            throw new InvalidImageContentException("The BMP pixel offset is invalid.");
+        if (DecodeContext.Strict && (compression is Rgb or BitFields or AlphaBitFields) &&
+            pixelOffset + Stride((int)width, bitsPerPixel) * height > data.Length)
+            throw new InvalidImageContentException("The BMP pixel data is truncated.");
+
         var palette = bitsPerPixel <= 8
             ? ReadPalette(span, paletteStart, colorsUsed > 0 ? colorsUsed : 1 << bitsPerPixel, paletteEntrySize, pixelOffset)
             : [];
@@ -135,7 +141,7 @@ internal static class BmpDecoder
     /// <summary>The palette as R, G, B triples; entries the file does not hold are left black.</summary>
     private static byte[] ReadPalette(ReadOnlySpan<byte> data, int start, int count, int entrySize, long pixelOffset)
     {
-        var palette = new byte[count * 3];
+        var palette = DecodeContext.Allocate<byte>(checked(count * 3));
         var limit = pixelOffset > start && pixelOffset <= data.Length ? (int)pixelOffset : data.Length;
 
         for (var index = 0; index < count; index++)
@@ -163,6 +169,7 @@ internal static class BmpDecoder
 
         for (var row = 0; row < image.Height; row++)
         {
+            DecodeContext.Checkpoint();
             var start = context.PixelOffset + (row * stride);
 
             if (start + stride > context.Data.Length)
@@ -186,6 +193,7 @@ internal static class BmpDecoder
 
         for (var row = 0; row < image.Height; row++)
         {
+            DecodeContext.Checkpoint();
             var start = context.PixelOffset + (row * stride);
 
             if (start + stride > data.Length)
@@ -207,6 +215,7 @@ internal static class BmpDecoder
 
         for (var row = 0; row < image.Height; row++)
         {
+            DecodeContext.Checkpoint();
             var start = context.PixelOffset + (row * stride);
 
             if (start + stride > data.Length)
@@ -231,6 +240,7 @@ internal static class BmpDecoder
 
         for (var row = 0; row < image.Height; row++)
         {
+            DecodeContext.Checkpoint();
             var start = context.PixelOffset + (row * stride);
 
             if (start + stride > data.Length)
@@ -261,7 +271,7 @@ internal static class BmpDecoder
         var maximum = mask >> shift;
         var value = (pixel & mask) >> shift;
 
-        return (byte)(((value * 255) + (maximum / 2)) / maximum);
+        return (byte)((((ulong)value * 255) + (maximum / 2)) / maximum);
     }
 
     private static void DecodeRunLength(BmpContext context, bool fourBit)
@@ -272,13 +282,18 @@ internal static class BmpDecoder
         var x = 0;
         var row = 0;
 
-        while (position + 1 < data.Length && row < image.Height)
+        while (position + 1 < data.Length && (row < image.Height || DecodeContext.Strict))
         {
+            DecodeContext.Checkpoint();
             var count = data[position++];
             var value = data[position++];
+            if (DecodeContext.Strict && row >= image.Height && !(count == 0 && value == 1))
+                throw new InvalidImageContentException("The BMP run exceeds its canvas.");
 
             if (count > 0)
             {
+                if (DecodeContext.Strict && count > image.Width - x)
+                    throw new InvalidImageContentException("A BMP run exceeds its row.");
                 for (var index = 0; index < count; index++, x++)
                 {
                     if (x < image.Width)
@@ -300,18 +315,26 @@ internal static class BmpDecoder
 
                 case 2:
                     if (position + 1 >= data.Length)
+                    {
+                        if (DecodeContext.Strict) throw new InvalidImageContentException("A BMP delta is truncated.");
                         return;
+                    }
 
                     x += data[position++];
                     row += data[position++];
+                    if (DecodeContext.Strict && (x > image.Width || row >= image.Height))
+                        throw new InvalidImageContentException("A BMP delta exceeds its canvas.");
                     break;
 
                 default:
                 {
                     var bytes = fourBit ? (value + 1) / 2 : value;
 
-                    if (position + bytes > data.Length)
-                        return;
+                    if (position + bytes + (bytes & 1) > data.Length || value > image.Width - x)
+                    {
+                        if (DecodeContext.Strict) throw new InvalidImageContentException("A BMP absolute run is invalid.");
+                        if (position + bytes > data.Length) return;
+                    }
 
                     for (var index = 0; index < value; index++, x++)
                     {
@@ -328,5 +351,7 @@ internal static class BmpDecoder
                 }
             }
         }
+        if (DecodeContext.Strict)
+            throw new InvalidImageContentException("The BMP run-length data is missing its end marker.");
     }
 }

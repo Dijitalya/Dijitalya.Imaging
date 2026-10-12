@@ -3,7 +3,8 @@ namespace Dijitalya.Imaging;
 /// <summary>
 /// The largest pictures the codecs accept. A file of a few kilobytes can claim to be a picture of a
 /// billion pixels; the decoders compare the size a file announces with these limits before they
-/// allocate anything for it, so such a file is refused instead of exhausting memory.
+/// allocate pixel buffers for it. Per-operation decoder budgets are configured separately with
+/// <see cref="ImageDecodeOptions"/>; dimension limits alone do not bound total process memory.
 /// </summary>
 public static class ImageLimits
 {
@@ -17,7 +18,7 @@ public static class ImageLimits
     public const long MaxPixelCount = 64L * 1024 * 1024;
 
     /// <summary>
-    /// The largest file <see cref="ImageCodec.DecodeAsync"/> reads: room for the largest picture
+    /// The largest file <see cref="ImageCodec.DecodeAsync(System.IO.Stream, System.Threading.CancellationToken)"/> reads: room for the largest picture
     /// stored uncompressed, plus metadata.
     /// </summary>
     public const long MaxFileSize = (MaxPixelCount * 4) + (16 * 1024 * 1024);
@@ -31,5 +32,7 @@ public static class ImageLimits
     {
         if (!IsAllowed(width, height))
             throw new InvalidImageContentException($"A picture of {width} x {height} pixels is not supported.");
+
+        DecodeContext.EnsureSize(width, height);
     }
 }

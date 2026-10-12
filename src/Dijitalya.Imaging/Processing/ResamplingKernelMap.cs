@@ -33,21 +33,23 @@ internal sealed class ResamplingKernelMap
     /// <summary>The longest run of source pixels any destination pixel reads.</summary>
     public int MaxCount { get; }
 
-    public static ResamplingKernelMap Create(int sourceLength, int destinationLength)
+    public static ResamplingKernelMap Create(int sourceLength, int destinationLength) =>
+        Create(sourceLength, destinationLength, (double)sourceLength / destinationLength, 0);
+
+    public static ResamplingKernelMap Create(int sourceLength, int destinationLength, double scale, long destinationOffset)
     {
-        var scale = (double)sourceLength / destinationLength;
         var filterScale = Math.Max(1.0, scale);
         var support = Radius * filterScale;
 
         var starts = new int[destinationLength];
         var counts = new int[destinationLength];
         var offsets = new int[destinationLength];
-        var weights = new List<float>(destinationLength * ((int)Math.Ceiling(support * 2) + 1));
+        var weights = new List<float>((int)Math.Min(checked((long)destinationLength * Math.Min(sourceLength, (long)Math.Ceiling(support * 2) + 1)), 1_048_576));
         var maxCount = 1;
 
         for (var destination = 0; destination < destinationLength; destination++)
         {
-            var center = ((destination + 0.5) * scale) - 0.5;
+            var center = ((destination + destinationOffset + 0.5) * scale) - 0.5;
             var left = Math.Max(0, (int)Math.Ceiling(center - support));
             var right = Math.Min(sourceLength - 1, (int)Math.Floor(center + support));
 

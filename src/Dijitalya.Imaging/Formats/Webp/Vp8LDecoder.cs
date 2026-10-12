@@ -60,6 +60,7 @@ internal sealed class Vp8LDecoder
 
         for (var index = 0; index < argb.Length; index++)
         {
+            if ((index & 4095) == 0) DecodeContext.Checkpoint();
             var value = argb[index];
             var target = index * 4;
 
@@ -80,7 +81,7 @@ internal sealed class Vp8LDecoder
     {
         var reader = new Vp8LBitReader(data, start, length);
         var argb = new Vp8LDecoder(reader).DecodeImage(width, height);
-        var alpha = new byte[argb.Length];
+        var alpha = DecodeContext.Allocate<byte>(checked(argb.Length));
 
         for (var index = 0; index < argb.Length; index++)
             alpha[index] = (byte)(argb[index] >> 8);
@@ -145,7 +146,7 @@ internal sealed class Vp8LDecoder
     // The table is stored as differences from the previous entry; indexes past it are transparent black.
     private static uint[] ExpandColorTable(uint[] table, int bits)
     {
-        var expanded = new uint[1 << (8 >> bits)];
+        var expanded = DecodeContext.Allocate<uint>(checked(1 << (8 >> bits)));
         expanded[0] = table[0];
 
         for (var index = 1; index < table.Length; index++)
@@ -180,7 +181,7 @@ internal sealed class Vp8LDecoder
             groupWidth = SubSampleSize(width, groupBits);
 
             var groupPixels = DecodeImageStream(groupWidth, SubSampleSize(height, groupBits), isMainImage: false);
-            groupImage = new int[groupPixels.Length];
+            groupImage = DecodeContext.Allocate<int>(checked(groupPixels.Length));
 
             for (var index = 0; index < groupPixels.Length; index++)
             {
@@ -190,7 +191,7 @@ internal sealed class Vp8LDecoder
             }
 
             // Groups the image never names are read and dropped; the used ones are numbered densely.
-            groupMapping = new int[groupCountInFile];
+            groupMapping = DecodeContext.Allocate<int>(checked(groupCountInFile));
             Array.Fill(groupMapping, -1);
             groupCount = 0;
 
@@ -212,12 +213,13 @@ internal sealed class Vp8LDecoder
         if (_reader.RemainingBits + 64 < (long)groupCountInFile * 20)
             throw new InvalidImageContentException("The WebP data is cut off.");
 
-        var groups = new Vp8LHuffmanGroup[groupCount];
+        var groups = DecodeContext.Allocate<Vp8LHuffmanGroup>(groupCount);
         var greenSize = LiteralCodes + LengthCodes + (cacheBits > 0 ? 1 << cacheBits : 0);
-        var lengths = new int[Math.Max(greenSize, 256)];
+        var lengths = DecodeContext.Allocate<int>(Math.Max(greenSize, 256));
 
         for (var index = 0; index < groupCountInFile; index++)
         {
+            DecodeContext.Checkpoint();
             var group = new Vp8LHuffmanGroup(
                 ReadCode(greenSize, lengths),
                 ReadCode(256, lengths),
@@ -231,7 +233,7 @@ internal sealed class Vp8LDecoder
                 groups[target] = group;
         }
 
-        var pixels = new uint[width * height];
+        var pixels = DecodeContext.Allocate<uint>(checked(width * height));
         DecodePixels(pixels, width, height, groups, groupImage, groupBits, groupWidth, cacheBits);
 
         if (_reader.IsEndOfStream)
@@ -257,6 +259,7 @@ internal sealed class Vp8LDecoder
         else
         {
             Span<int> codeLengthLengths = stackalloc int[CodeLengthCodes];
+            codeLengthLengths.Clear();
             var count = _reader.ReadBits(4) + 4;
 
             for (var index = 0; index < count; index++)
@@ -317,7 +320,7 @@ internal sealed class Vp8LDecoder
     private void DecodePixels(uint[] pixels, int width, int height, Vp8LHuffmanGroup[] groups, int[]? groupImage, int groupBits, int groupWidth, int cacheBits)
     {
         var total = width * height;
-        var cache = cacheBits > 0 ? new uint[1 << cacheBits] : null;
+        var cache = cacheBits > 0 ? DecodeContext.Allocate<uint>(checked(1 << cacheBits)) : null;
         var cacheShift = 32 - cacheBits;
         var lengthLimit = LiteralCodes + LengthCodes;
         var cacheLimit = lengthLimit + (cache?.Length ?? 0);
@@ -329,6 +332,7 @@ internal sealed class Vp8LDecoder
 
         while (position < total)
         {
+            DecodeContext.Checkpoint();
             if ((x & mask) == 0 && groupImage is not null)
                 group = groups[groupImage[((y >> groupBits) * groupWidth) + (x >> groupBits)]];
 
@@ -464,6 +468,7 @@ internal sealed class Vp8LDecoder
 
         for (var y = 1; y < height; y++)
         {
+            DecodeContext.Checkpoint();
             var row = y * width;
             var tileRow = (y >> bits) * tilesPerRow;
 
@@ -515,6 +520,7 @@ internal sealed class Vp8LDecoder
 
         for (var y = 0; y < height; y++)
         {
+            DecodeContext.Checkpoint();
             var row = y * width;
             var tileRow = (y >> bits) * tilesPerRow;
 
@@ -546,7 +552,7 @@ internal sealed class Vp8LDecoder
         var height = transform.Height;
         var bits = transform.Bits;
         var table = transform.Data;
-        var output = new uint[width * height];
+        var output = DecodeContext.Allocate<uint>(checked(width * height));
 
         if (bits == 0)
         {
@@ -563,6 +569,7 @@ internal sealed class Vp8LDecoder
 
         for (var y = 0; y < height; y++)
         {
+            DecodeContext.Checkpoint();
             var source = y * packedWidth;
             var target = y * width;
 

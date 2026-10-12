@@ -37,6 +37,7 @@ internal static class JpegColorConverter
 
                 for (var index = 0; index < count; index++)
                 {
+                    if ((index & 4095) == 0) DecodeContext.Checkpoint();
                     var target = index * 4;
                     pixels[target] = pixels[target + 1] = pixels[target + 2] = gray[index];
                     pixels[target + 3] = 255;
@@ -48,6 +49,7 @@ internal static class JpegColorConverter
             case JpegColorSpace.Rgb:
                 for (var index = 0; index < count; index++)
                 {
+                    if ((index & 4095) == 0) DecodeContext.Checkpoint();
                     var target = index * 4;
                     pixels[target] = full[0][index];
                     pixels[target + 1] = full[1][index];
@@ -59,13 +61,17 @@ internal static class JpegColorConverter
 
             case JpegColorSpace.YCbCr:
                 for (var index = 0; index < count; index++)
+                {
+                    if ((index & 4095) == 0) DecodeContext.Checkpoint();
                     WriteYCbCr(pixels, index * 4, full[0][index], full[1][index], full[2][index]);
+                }
 
                 break;
 
             case JpegColorSpace.Cmyk:
                 for (var index = 0; index < count; index++)
                 {
+                    if ((index & 4095) == 0) DecodeContext.Checkpoint();
                     var target = index * 4;
                     var white = 255 - full[3][index];
                     pixels[target] = Multiply(255 - full[0][index], white);
@@ -79,6 +85,7 @@ internal static class JpegColorConverter
             case JpegColorSpace.InvertedCmyk:
                 for (var index = 0; index < count; index++)
                 {
+                    if ((index & 4095) == 0) DecodeContext.Checkpoint();
                     var target = index * 4;
                     var white = full[3][index];
                     pixels[target] = Multiply(full[0][index], white);
@@ -92,6 +99,7 @@ internal static class JpegColorConverter
             default:
                 for (var index = 0; index < count; index++)
                 {
+                    if ((index & 4095) == 0) DecodeContext.Checkpoint();
                     // YCC carries R, G, B; libjpeg turns them into inverted C, M, Y as 255 - R, ...,
                     // which are then laid over the inverted K like any Adobe CMYK.
                     var target = index * 4;
@@ -126,12 +134,15 @@ internal static class JpegColorConverter
         var width = frame.Width;
         var height = frame.Height;
         var stride = component.BlocksPerLineForMcu * 8;
-        var result = new byte[width * height];
+        var result = DecodeContext.Allocate<byte>(checked(width * height));
 
         if (component.HorizontalFactor == frame.MaxHorizontalFactor && component.VerticalFactor == frame.MaxVerticalFactor)
         {
             for (var y = 0; y < height; y++)
+            {
+                DecodeContext.Checkpoint();
                 Array.Copy(plane, y * stride, result, y * width, width);
+            }
 
             return result;
         }
@@ -141,6 +152,7 @@ internal static class JpegColorConverter
 
         for (var y = 0; y < height; y++)
         {
+            DecodeContext.Checkpoint();
             var upper = top[y] * stride;
             var lower = bottom[y] * stride;
             var weightY = verticalWeight[y];
@@ -161,9 +173,9 @@ internal static class JpegColorConverter
     /// <summary>For each output pixel along one axis: the two samples around its centre and the weight (0 to 256) of the second.</summary>
     private static (int[] First, int[] Second, int[] Weight) Positions(int length, int factor, int maxFactor, int sampleLength)
     {
-        var first = new int[length];
-        var second = new int[length];
-        var weight = new int[length];
+        var first = DecodeContext.Allocate<int>(checked(length));
+        var second = DecodeContext.Allocate<int>(checked(length));
+        var weight = DecodeContext.Allocate<int>(checked(length));
         var ratio = (double)factor / maxFactor;
 
         for (var index = 0; index < length; index++)

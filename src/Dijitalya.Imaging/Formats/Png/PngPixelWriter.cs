@@ -40,6 +40,8 @@ internal sealed class PngPixelWriter(PngHeader header, byte[]? palette, byte[]? 
                     }
                     else
                     {
+                        if (DecodeContext.Strict)
+                            throw new InvalidImageContentException("A PNG pixel references an undefined palette entry.");
                         pixels[target] = pixels[target + 1] = pixels[target + 2] = 0;
                     }
 

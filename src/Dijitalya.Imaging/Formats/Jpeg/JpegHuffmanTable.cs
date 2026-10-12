@@ -9,9 +9,9 @@ internal sealed class JpegHuffmanTable
     public const int LookupBits = 9;
 
     // (length << 8) | symbol for every bit pattern of LookupBits bits whose code is that short; 0 otherwise.
-    private readonly ushort[] _lookup = new ushort[1 << LookupBits];
-    private readonly int[] _maxCode = new int[17];
-    private readonly int[] _valueOffset = new int[17];
+    private readonly ushort[] _lookup = DecodeContext.Allocate<ushort>(checked(1 << LookupBits));
+    private readonly int[] _maxCode = DecodeContext.Allocate<int>(checked(17));
+    private readonly int[] _valueOffset = DecodeContext.Allocate<int>(checked(17));
     private readonly byte[] _symbols;
 
     /// <param name="counts">How many codes have each length from 1 to 16 bits.</param>
@@ -26,7 +26,7 @@ internal sealed class JpegHuffmanTable
         if (counts.Length != 16 || total > 256 || total != symbols.Length)
             throw new InvalidImageContentException("A JPEG Huffman table is malformed.");
 
-        _symbols = symbols.ToArray();
+        _symbols = DecodeContext.Copy(symbols);
 
         var code = 0;
         var index = 0;

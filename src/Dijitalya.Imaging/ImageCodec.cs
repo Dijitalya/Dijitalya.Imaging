@@ -66,9 +66,21 @@ public static class ImageCodec
     /// <summary>Decodes a picture from its file content.</summary>
     /// <exception cref="UnknownImageFormatException">The content is not in a format the codecs know.</exception>
     /// <exception cref="InvalidImageContentException">The content is damaged, unsupported or too large.</exception>
-    public static DecodedImage Decode(byte[] data)
+    public static DecodedImage Decode(byte[] data) => Decode(data, new ImageDecodeOptions());
+
+    /// <summary>Decodes with per-operation limits, validation and cooperative cancellation.</summary>
+    public static DecodedImage Decode(byte[] data, ImageDecodeOptions options, CancellationToken cancellationToken = default) =>
+        DecodeCore(data, options, cancellationToken, 0);
+
+    private static DecodedImage DecodeCore(byte[] data, ImageDecodeOptions options, CancellationToken cancellationToken, long bufferingBytes)
     {
         ArgumentNullException.ThrowIfNull(data);
+        ArgumentNullException.ThrowIfNull(options);
+        options.Validate();
+        cancellationToken.ThrowIfCancellationRequested();
+        if (data.LongLength > options.MaxFileSize)
+            throw new InvalidImageContentException("The input exceeds the configured file size limit.");
+        using var context = DecodeContext.Begin(options, cancellationToken, checked(data.LongLength + bufferingBytes));
 
         var format = DetectFormat(data) ?? throw new UnknownImageFormatException();
 
@@ -102,31 +114,78 @@ public static class ImageCodec
     /// </summary>
     /// <exception cref="UnknownImageFormatException">The content is not in a format the codecs know.</exception>
     /// <exception cref="InvalidImageContentException">The content is damaged, unsupported or too large.</exception>
-    public static async Task<DecodedImage> DecodeAsync(Stream stream, CancellationToken cancellationToken = default)
+    public static Task<DecodedImage> DecodeAsync(Stream stream, CancellationToken cancellationToken = default) =>
+        DecodeAsync(stream, new ImageDecodeOptions(), cancellationToken);
+
+    /// <summary>Reads and decodes a stream with per-operation limits and cancellation.</summary>
+    public static async Task<DecodedImage> DecodeAsync(Stream stream, ImageDecodeOptions options, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(stream);
+        ArgumentNullException.ThrowIfNull(options);
+        options.Validate();
+        cancellationToken.ThrowIfCancellationRequested();
 
-        var header = new byte[SignatureLength];
-        var headerLength = await stream.ReadAtLeastAsync(header, header.Length, throwOnEndOfStream: false, cancellationToken);
-
-        if (DetectFormat(header.AsSpan(0, headerLength)) is null)
-            throw new UnknownImageFormatException();
-
-        using var buffer = new MemoryStream();
-        buffer.Write(header, 0, headerLength);
-
-        var chunk = new byte[81920];
-        int read;
-
-        while ((read = await stream.ReadAsync(chunk, cancellationToken)) > 0)
+        if (stream.CanSeek)
         {
-            if (buffer.Length + read > ImageLimits.MaxFileSize)
-                throw new InvalidImageContentException("The file is too large to be decoded.");
+            var remaining = stream.Length - stream.Position;
+            if (remaining < 0 || remaining > options.MaxFileSize || remaining > options.MaxAllocationBytes)
+                throw new InvalidImageContentException("The input exceeds the configured file or allocation limit.");
 
-            buffer.Write(chunk, 0, read);
+            var header = new byte[SignatureLength];
+            var count = await stream.ReadAtLeastAsync(header, (int)Math.Min(remaining, SignatureLength),
+                throwOnEndOfStream: false, cancellationToken);
+            if (DetectFormat(header.AsSpan(0, count)) is null)
+                throw new UnknownImageFormatException();
+            if (count > remaining)
+                throw new InvalidImageContentException("The stream length changed while it was read.");
+
+            // Allocate once for streams with a known length; avoid MemoryStream growth and ToArray.
+            var data = new byte[(int)remaining];
+            header.AsSpan(0, count).CopyTo(data);
+            try
+            {
+                await stream.ReadExactlyAsync(data.AsMemory(count), cancellationToken);
+            }
+            catch (EndOfStreamException exception)
+            {
+                throw new InvalidImageContentException("The image stream is truncated.", exception);
+            }
+            var extra = await stream.ReadAsync(header.AsMemory(0, 1), cancellationToken);
+            if (extra != 0)
+                throw new InvalidImageContentException("The stream length changed while it was read.");
+            return Decode(data, options, cancellationToken);
         }
 
-        return Decode(buffer.ToArray());
+        var signature = new byte[SignatureLength];
+        var signatureLength = await stream.ReadAtLeastAsync(signature, signature.Length,
+            throwOnEndOfStream: false, cancellationToken);
+        if (DetectFormat(signature.AsSpan(0, signatureLength)) is null)
+            throw new UnknownImageFormatException();
+        if (signatureLength > options.MaxFileSize || signatureLength > options.MaxAllocationBytes / 3)
+            throw new InvalidImageContentException("The input exceeds the configured buffering limit.");
+
+        using var buffer = new MemoryStream();
+        buffer.Write(signature, 0, signatureLength);
+        var chunk = System.Buffers.ArrayPool<byte>.Shared.Rent(81920);
+        try
+        {
+            int read;
+            while ((read = await stream.ReadAsync(chunk.AsMemory(0, 81920), cancellationToken)) > 0)
+            {
+                var length = buffer.Length + read;
+                // Include geometric capacity growth and the final exact-length copy.
+                var capacity = length > buffer.Capacity ? Math.Max(256, Math.Max(length, (long)buffer.Capacity * 2)) : buffer.Capacity;
+                if (length > options.MaxFileSize || capacity + length > options.MaxAllocationBytes)
+                    throw new InvalidImageContentException("The input exceeds the configured buffering limit.");
+                buffer.Write(chunk, 0, read);
+            }
+            var data = buffer.ToArray();
+            return DecodeCore(data, options, cancellationToken, buffer.Capacity);
+        }
+        finally
+        {
+            System.Buffers.ArrayPool<byte>.Shared.Return(chunk, clearArray: true);
+        }
     }
 
     /// <summary>
@@ -165,7 +224,8 @@ public static class ImageCodec
         ImageFormat.Png => ".png",
         ImageFormat.Gif => ".gif",
         ImageFormat.Bmp => ".bmp",
-        _ => ".webp",
+        ImageFormat.Webp => ".webp",
+        _ => throw new ArgumentOutOfRangeException(nameof(format)),
     };
 
     /// <summary>The media type of a format.</summary>
@@ -175,7 +235,8 @@ public static class ImageCodec
         ImageFormat.Png => "image/png",
         ImageFormat.Gif => "image/gif",
         ImageFormat.Bmp => "image/bmp",
-        _ => "image/webp",
+        ImageFormat.Webp => "image/webp",
+        _ => throw new ArgumentOutOfRangeException(nameof(format)),
     };
 
     private static ReadOnlySpan<byte> PngSignature => [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];

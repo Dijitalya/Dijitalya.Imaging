@@ -58,6 +58,7 @@ internal sealed class JpegScanDecoder
 
             for (; mcu < end; mcu++)
             {
+                DecodeContext.Checkpoint();
                 if (single)
                 {
                     var component = _components[0];
@@ -85,6 +86,9 @@ internal sealed class JpegScanDecoder
 
             var marker = _reader.AlignToMarker();
 
+            if (DecodeContext.Strict && mcu < mcuCount &&
+                (marker + 1 >= _data.Length || _data[marker + 1] is < 0xD0 or > 0xD7))
+                throw new InvalidImageContentException("The JPEG scan is missing a restart marker.");
             if (mcu >= mcuCount || marker + 1 >= _data.Length || _data[marker + 1] is < 0xD0 or > 0xD7)
                 return marker;
 

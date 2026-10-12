@@ -22,7 +22,7 @@ internal sealed class JpegFrame
             component.BlocksPerColumn = DivideRoundingUp(component.SampleHeight, 8);
             component.BlocksPerLineForMcu = McusPerLine * component.HorizontalFactor;
             component.BlocksPerColumnForMcu = McusPerColumn * component.VerticalFactor;
-            component.Coefficients = new short[(long)component.BlocksPerLineForMcu * component.BlocksPerColumnForMcu * 64];
+            component.Coefficients = DecodeContext.Allocate<short>(checked((long)component.BlocksPerLineForMcu * component.BlocksPerColumnForMcu * 64));
         }
     }
 

@@ -1,0 +1,107 @@
+[
+  {
+    "File": "baseline.jpg",
+    "Expected": "baseline.jpg.rgba",
+    "Width": 37,
+    "Height": 29,
+    "MeanAbsoluteError": 3.0
+  },
+  {
+    "File": "progressive.jpg",
+    "Expected": "progressive.jpg.rgba",
+    "Width": 37,
+    "Height": 29,
+    "MeanAbsoluteError": 3.0
+  },
+  {
+    "File": "subsampled.jpg",
+    "Expected": "subsampled.jpg.rgba",
+    "Width": 37,
+    "Height": 29,
+    "MeanAbsoluteError": 3.0
+  },
+  {
+    "File": "grayscale.jpg",
+    "Expected": "grayscale.jpg.rgba",
+    "Width": 37,
+    "Height": 29,
+    "MeanAbsoluteError": 3.0
+  },
+  {
+    "File": "cmyk.jpg",
+    "Expected": "cmyk.jpg.rgba",
+    "Width": 37,
+    "Height": 29,
+    "MeanAbsoluteError": 3.0
+  },
+  {
+    "File": "rgba.png",
+    "Expected": "rgba.png.rgba",
+    "Width": 37,
+    "Height": 29,
+    "MeanAbsoluteError": 0
+  },
+  {
+    "File": "lossless.webp",
+    "Expected": "lossless.webp.rgba",
+    "Width": 37,
+    "Height": 29,
+    "MeanAbsoluteError": 0
+  },
+  {
+    "File": "indexed.png",
+    "Expected": "indexed.png.rgba",
+    "Width": 37,
+    "Height": 29,
+    "MeanAbsoluteError": 0
+  },
+  {
+    "File": "palette.gif",
+    "Expected": "palette.gif.rgba",
+    "Width": 37,
+    "Height": 29,
+    "MeanAbsoluteError": 0
+  },
+  {
+    "File": "monochrome.png",
+    "Expected": "monochrome.png.rgba",
+    "Width": 37,
+    "Height": 29,
+    "MeanAbsoluteError": 0
+  },
+  {
+    "File": "rgb.bmp",
+    "Expected": "rgb.bmp.rgba",
+    "Width": 37,
+    "Height": 29,
+    "MeanAbsoluteError": 0
+  },
+  {
+    "File": "adam7.png",
+    "Expected": "adam7.png.rgba",
+    "Width": 37,
+    "Height": 29,
+    "MeanAbsoluteError": 0
+  },
+  {
+    "File": "grayscale16.png",
+    "Expected": "grayscale16.png.rgba",
+    "Width": 37,
+    "Height": 29,
+    "MeanAbsoluteError": 0
+  },
+  {
+    "File": "rle8.bmp",
+    "Expected": "rle8.bmp.rgba",
+    "Width": 4,
+    "Height": 2,
+    "MeanAbsoluteError": 0
+  },
+  {
+    "File": "rle4.bmp",
+    "Expected": "rle4.bmp.rgba",
+    "Width": 4,
+    "Height": 2,
+    "MeanAbsoluteError": 0
+  }
+]

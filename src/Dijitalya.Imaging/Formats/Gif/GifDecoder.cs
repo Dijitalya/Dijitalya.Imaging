@@ -33,7 +33,7 @@ internal static class GifDecoder
             if (position + size > data.Length)
                 throw new InvalidImageContentException("The GIF colour table is cut off.");
 
-            globalTable = data.AsSpan(position, size).ToArray();
+            globalTable = DecodeContext.Copy(data.AsSpan(position, size));
             position += size;
         }
 
@@ -41,6 +41,7 @@ internal static class GifDecoder
 
         while (position < data.Length)
         {
+            DecodeContext.Checkpoint();
             var block = data[position++];
 
             if (block == ExtensionIntroducer)
@@ -86,6 +87,10 @@ internal static class GifDecoder
 
         ImageLimits.EnsureSize(width, height);
 
+        if (DecodeContext.Strict && (!ImageLimits.IsAllowed(screenWidth, screenHeight) ||
+            left + width > screenWidth || top + height > screenHeight))
+            throw new InvalidImageContentException("The GIF frame does not fit its canvas.");
+
         // A screen that is missing or smaller than the frame would cut the picture: the frame decides then.
         if (screenWidth == 0 || screenHeight == 0 || left + width > screenWidth || top + height > screenHeight)
         {
@@ -101,6 +106,7 @@ internal static class GifDecoder
             left = top = 0;
         }
 
+        ImageLimits.EnsureSize(screenWidth, screenHeight);
         var table = globalTable;
 
         if ((packed & 0x80) != 0)
@@ -110,7 +116,7 @@ internal static class GifDecoder
             if (position + size > data.Length)
                 throw new InvalidImageContentException("The GIF colour table is cut off.");
 
-            table = data.AsSpan(position, size).ToArray();
+            table = DecodeContext.Copy(data.AsSpan(position, size));
             position += size;
         }
 
@@ -119,7 +125,7 @@ internal static class GifDecoder
 
         var minimumCodeSize = data[position++];
         var compressed = ReadSubBlocks(data, position);
-        var indexes = new byte[width * height];
+        var indexes = DecodeContext.Allocate<byte>(checked(width * height));
         var count = GifLzwDecoder.Decode(compressed, minimumCodeSize, indexes);
 
         if (count == 0)
@@ -132,6 +138,7 @@ internal static class GifDecoder
 
         for (var row = 0; row < height; row++)
         {
+            DecodeContext.Checkpoint();
             var y = top + (rows?[row] ?? row);
 
             for (var column = 0; column < width; column++)
@@ -149,6 +156,8 @@ internal static class GifDecoder
                 var target = ((y * screenWidth) + left + column) * 4;
                 var entry = colorIndex * 3;
 
+                if (DecodeContext.Strict && (table is null || entry + 2 >= table.Length))
+                    throw new InvalidImageContentException("A GIF pixel references an undefined palette entry.");
                 if (table is not null && entry + 2 < table.Length)
                 {
                     pixels[target] = table[entry];
@@ -166,7 +175,7 @@ internal static class GifDecoder
     /// <summary>The picture row each stored row of an interlaced image belongs to: every 8th from 0, every 8th from 4, every 4th from 2, every 2nd from 1.</summary>
     private static int[] InterlacedRows(int height)
     {
-        var rows = new int[height];
+        var rows = DecodeContext.Allocate<int>(checked(height));
         var stored = 0;
 
         foreach (var (start, step) in new[] { (0, 8), (4, 8), (2, 4), (1, 2) })
@@ -183,14 +192,19 @@ internal static class GifDecoder
     {
         while (position < data.Length)
         {
+            DecodeContext.Checkpoint();
             var size = data[position++];
 
             if (size == 0)
                 return position;
 
+            if (DecodeContext.Strict && size > data.Length - position)
+                throw new InvalidImageContentException("A GIF extension is truncated.");
             position += size;
         }
 
+        if (DecodeContext.Strict)
+            throw new InvalidImageContentException("A GIF extension is missing its terminator.");
         return data.Length;
     }
 
@@ -198,19 +212,27 @@ internal static class GifDecoder
     private static byte[] ReadSubBlocks(byte[] data, int position)
     {
         using var output = new MemoryStream();
+        var terminated = false;
 
         while (position < data.Length)
         {
+            DecodeContext.Checkpoint();
             var size = data[position++];
 
             if (size == 0)
+            {
+                terminated = true;
                 break;
+            }
 
             var available = Math.Min(size, data.Length - position);
+            DecodeContext.Charge(available * 3L);
             output.Write(data, position, available);
             position += size;
         }
 
+        if (DecodeContext.Strict && !terminated)
+            throw new InvalidImageContentException("The GIF image data is missing its terminator.");
         return output.ToArray();
     }
 }

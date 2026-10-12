@@ -15,7 +15,15 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
 
@@ -40,20 +48,58 @@ jobs:
 
       - run: dotnet build --no-restore --configuration Release -p:Version="$PACKAGE_VERSION"
 
-      - run: dotnet test --no-build --configuration Release --logger trx
+      - run: dotnet test --no-build --configuration Release --logger trx --blame-hang-timeout 2m
 
-      - run: dotnet pack src/Dijitalya.Imaging/Dijitalya.Imaging.csproj --no-build --configuration Release -p:Version="$PACKAGE_VERSION" --output artifacts
+      - run: dotnet run --project tools/Imaging.Validation --configuration Release -p:Version="$PACKAGE_VERSION" -- --smoke
+
+      - name: Benchmark
+        run: |
+          mkdir -p artifacts/validation
+          dotnet run --project tools/Imaging.Validation --configuration Release -p:Version="$PACKAGE_VERSION" -- --benchmark 3 > artifacts/validation/benchmark.csv
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-${{ matrix.os }}
+          path: artifacts/validation/benchmark.csv
+
+      - name: Publish Native AOT smoke executable
+        run: dotnet publish tools/Imaging.Validation --configuration Release -p:Version="$PACKAGE_VERSION" -p:PublishAot=true --output artifacts/aot
+
+      - name: Run Native AOT smoke executable
+        run: |
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            ./artifacts/aot/Imaging.Validation.exe --smoke
+          else
+            ./artifacts/aot/Imaging.Validation --smoke
+          fi
+
+      - uses: actions/setup-python@v5
+        if: runner.os == 'Linux'
+        with:
+          python-version: '3.12'
+
+      - name: Verify encoded files with independent decoders
+        if: runner.os == 'Linux'
+        run: |
+          python -m pip install Pillow
+          dotnet run --project tools/Imaging.Validation --configuration Release -p:Version="$PACKAGE_VERSION" -- --export artifacts/interop
+          python tools/verify_external.py artifacts/interop
+
+      - run: dotnet pack src/Dijitalya.Imaging/Dijitalya.Imaging.csproj --configuration Release -p:Version="$PACKAGE_VERSION" --output artifacts
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: test-results
+          name: test-results-${{ matrix.os }}
           path: '**/TestResults/*.trx'
 
       - uses: actions/upload-artifact@v4
+        if: runner.os == 'Linux'
         with:
           name: packages
-          path: artifacts/*
+          path: |
+            artifacts/*.nupkg
+            artifacts/*.snupkg
 
   publish:
     needs: build

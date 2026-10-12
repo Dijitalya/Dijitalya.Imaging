@@ -31,16 +31,16 @@ internal sealed class Vp8LHuffmanCode
 
     private Vp8LHuffmanCode(int fastBits, bool needsSlowPath, int symbols)
     {
-        _fast = new ushort[1 << fastBits];
+        _fast = DecodeContext.Allocate<ushort>(checked(1 << fastBits));
         _fastMask = (1 << fastBits) - 1;
         _singleSymbol = -1;
 
         if (needsSlowPath)
         {
-            _firstCode = new int[MaxLength + 1];
-            _count = new int[MaxLength + 1];
-            _offset = new int[MaxLength + 1];
-            _sorted = new int[symbols];
+            _firstCode = DecodeContext.Allocate<int>(checked(MaxLength + 1));
+            _count = DecodeContext.Allocate<int>(checked(MaxLength + 1));
+            _offset = DecodeContext.Allocate<int>(checked(MaxLength + 1));
+            _sorted = DecodeContext.Allocate<int>(checked(symbols));
         }
     }
 
@@ -48,6 +48,7 @@ internal sealed class Vp8LHuffmanCode
     public static Vp8LHuffmanCode Create(ReadOnlySpan<int> lengths)
     {
         Span<int> counts = stackalloc int[MaxLength + 1];
+        counts.Clear();
         var symbols = 0;
         var last = -1;
         var longest = 0;
@@ -92,7 +93,9 @@ internal sealed class Vp8LHuffmanCode
         var code = new Vp8LHuffmanCode(fastBits, longest > MaxFastBits, symbols);
 
         Span<int> firstCode = stackalloc int[MaxLength + 1];
+        firstCode.Clear();
         Span<int> offset = stackalloc int[MaxLength + 1];
+        offset.Clear();
         var next = 0;
         var index = 0;
 

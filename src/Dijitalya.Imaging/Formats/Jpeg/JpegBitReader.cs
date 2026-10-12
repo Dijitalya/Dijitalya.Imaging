@@ -3,14 +3,15 @@ namespace Dijitalya.Imaging.Formats.Jpeg;
 /// <summary>
 /// Reads the entropy-coded data of a scan bit by bit, most significant bit first. A 0xFF byte is
 /// followed by a stuffed 0x00, which is skipped. A marker ends the data: the reader stops in front of
-/// it and from then on supplies zero bits, so damaged or truncated data decodes to something instead
-/// of reading past the scan.
+/// it and supplies zero bits for lookahead. Strict mode rejects consuming these synthetic bits;
+/// tolerant mode can use them to recover an incomplete picture.
 /// </summary>
 internal sealed class JpegBitReader(byte[] data, int position)
 {
     private ulong _buffer;
     private int _count;
     private bool _atMarker;
+    private int _paddingBits;
 
     /// <summary>The next byte not yet taken into the buffer; at a marker, the marker's 0xFF.</summary>
     public int Position { get; private set; } = position;
@@ -24,7 +25,12 @@ internal sealed class JpegBitReader(byte[] data, int position)
     /// <summary>The next <paramref name="count"/> (at most 16) bits, without taking them; call <see cref="EnsureBits"/> first.</summary>
     public int PeekBits(int count) => (int)((_buffer >> (_count - count)) & ((1UL << count) - 1));
 
-    public void SkipBits(int count) => _count -= count;
+    public void SkipBits(int count)
+    {
+        if (DecodeContext.Strict && count > _count - _paddingBits)
+            throw new InvalidImageContentException("The JPEG scan ends before all coefficients are read.");
+        _count -= count;
+    }
 
     /// <summary>Reads <paramref name="count"/> bits (0 to 16) as an unsigned number.</summary>
     public int ReadBits(int count)
@@ -34,7 +40,7 @@ internal sealed class JpegBitReader(byte[] data, int position)
 
         EnsureBits(count);
         var value = PeekBits(count);
-        _count -= count;
+        SkipBits(count);
 
         return value;
     }
@@ -65,6 +71,7 @@ internal sealed class JpegBitReader(byte[] data, int position)
         _buffer = 0;
         _count = 0;
         _atMarker = false;
+        _paddingBits = 0;
         Position = JpegDecoder.FindMarker(data, Position);
 
         return Position;
@@ -79,6 +86,7 @@ internal sealed class JpegBitReader(byte[] data, int position)
         {
             _buffer <<= 8;
             _count += 8;
+            _paddingBits += 8;
             return;
         }
 
@@ -93,6 +101,7 @@ internal sealed class JpegBitReader(byte[] data, int position)
                 _atMarker = true;
                 _buffer <<= 8;
                 _count += 8;
+                _paddingBits += 8;
                 return;
             }
 

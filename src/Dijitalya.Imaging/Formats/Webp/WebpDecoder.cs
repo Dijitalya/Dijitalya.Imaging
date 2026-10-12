@@ -164,7 +164,11 @@ internal static class WebpDecoder
         while (TryReadChunk(data, position, end, out var tag, out var payload, out var payloadLength, out var next))
         {
             if (tag == "ICCP")
-                return IccProfiles.RgbOrNull(data.AsSpan(payload, payloadLength).ToArray());
+            {
+                if (payloadLength > DecodeContext.MaxMetadataBytes)
+                    throw new InvalidImageContentException("The WebP colour profile exceeds the metadata limit.");
+                return IccProfiles.RgbOrNull(DecodeContext.Copy(data.AsSpan(payload, payloadLength)));
+            }
 
             position = next;
         }
@@ -181,13 +185,22 @@ internal static class WebpDecoder
         payloadLength = 0;
         next = 0;
 
+        DecodeContext.Checkpoint();
         if (end - position < ChunkHeaderSize)
+        {
+            if (DecodeContext.Strict && position != end)
+                throw new InvalidImageContentException("The WebP chunk header is truncated.");
             return false;
+        }
 
         var size = BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(position + 4));
 
-        if (size > (uint)(end - position - ChunkHeaderSize))
+        if ((long)size + (size & 1) > end - position - ChunkHeaderSize)
+        {
+            if (DecodeContext.Strict)
+                throw new InvalidImageContentException("The WebP chunk payload is truncated.");
             return false;
+        }
 
         tag = System.Text.Encoding.ASCII.GetString(data, position, 4);
         payload = position + ChunkHeaderSize;

@@ -38,10 +38,13 @@ internal static class JpegDecoder
         var iccChunks = new SortedDictionary<int, byte[]>();
         var iccChunkCount = 0;
         var scans = 0;
+        var hasEnd = false;
+        var metadataBytes = 0;
         var position = 2;
 
         while (true)
         {
+            DecodeContext.Checkpoint();
             position = FindMarker(data, position);
 
             if (position + 1 >= data.Length)
@@ -54,7 +57,10 @@ internal static class JpegDecoder
                 continue;
 
             if (marker == Eoi)
+            {
+                hasEnd = true;
                 break;
+            }
 
             if (position + 2 > data.Length)
                 break;
@@ -75,6 +81,8 @@ internal static class JpegDecoder
                 case Sof0:
                 case Sof1:
                 case Sof2:
+                    if (DecodeContext.Strict && frame is not null)
+                        throw new InvalidImageContentException("The JPEG contains multiple frame headers.");
                     frame ??= ReadFrame(body, marker == Sof2);
                     break;
 
@@ -100,7 +108,13 @@ internal static class JpegDecoder
                     // A profile too large for one segment is split over several, numbered from 1.
                     if (body.Length > 14 && body[..12].SequenceEqual("ICC_PROFILE\0"u8) && body[12] > 0)
                     {
-                        iccChunks.TryAdd(body[12], body[14..].ToArray());
+                        if (!iccChunks.ContainsKey(body[12]))
+                        {
+                            metadataBytes = checked(metadataBytes + body.Length - 14);
+                            if (metadataBytes > DecodeContext.MaxMetadataBytes)
+                                throw new InvalidImageContentException("The JPEG colour profile exceeds the metadata limit.");
+                            iccChunks.Add(body[12], DecodeContext.Copy(body[14..]));
+                        }
                         iccChunkCount = body[13];
                     }
 
@@ -117,6 +131,8 @@ internal static class JpegDecoder
                     if (frame is null)
                         throw new InvalidImageContentException("The JPEG has a scan before its frame.");
 
+                    if (scans >= DecodeContext.MaxJpegScans)
+                        throw new InvalidImageContentException("The JPEG exceeds the configured scan limit.");
                     var scan = ReadScan(body, frame, dcTables, acTables, out var spectralStart, out var spectralEnd, out var successiveHigh, out var successiveLow);
                     var decoder = new JpegScanDecoder(data, end, frame, scan, restartInterval, spectralStart, spectralEnd, successiveHigh, successiveLow);
 
@@ -135,11 +151,14 @@ internal static class JpegDecoder
             position = end;
         }
 
+        if (DecodeContext.Strict && !hasEnd)
+            throw new InvalidImageContentException("The JPEG is missing its end marker.");
+
         if (frame is null || scans == 0)
             throw new InvalidImageContentException("The JPEG has no image data.");
 
         var planes = new byte[frame.Components.Count][];
-        var workspace = new float[64];
+        var workspace = DecodeContext.Allocate<float>(checked(64));
 
         for (var index = 0; index < planes.Length; index++)
         {
@@ -147,10 +166,11 @@ internal static class JpegDecoder
             var table = quantization[component.QuantizationTable]
                 ?? throw new InvalidImageContentException("The JPEG uses a quantisation table it does not define.");
             var stride = component.BlocksPerLineForMcu * 8;
-            var plane = new byte[stride * component.BlocksPerColumn * 8];
+            var plane = DecodeContext.Allocate<byte>(checked(stride * component.BlocksPerColumn * 8));
 
             for (var blockRow = 0; blockRow < component.BlocksPerColumn; blockRow++)
             {
+                DecodeContext.Checkpoint();
                 for (var blockColumn = 0; blockColumn < component.BlocksPerLine; blockColumn++)
                 {
                     JpegIdct.Transform(
@@ -188,6 +208,7 @@ internal static class JpegDecoder
         if (count == 0 || chunks.Count != count || chunks.Keys.First() != 1 || chunks.Keys.Last() != count)
             return null;
 
+        DecodeContext.Charge(chunks.Values.Sum(chunk => (long)chunk.Length));
         return IccProfiles.RgbOrNull(chunks.Values.SelectMany(chunk => chunk).ToArray());
     }
 
@@ -224,7 +245,13 @@ internal static class JpegDecoder
             if (horizontal is < 1 or > 4 || vertical is < 1 or > 4 || table > 3)
                 throw new InvalidImageContentException("A JPEG component is malformed.");
 
-            components.Add(new JpegComponent(body[offset], horizontal, vertical, table));
+            var componentId = body[offset];
+            foreach (var component in components)
+            {
+                if (component.Id == componentId)
+                    throw new InvalidImageContentException("The JPEG component identifiers are duplicated.");
+            }
+            components.Add(new JpegComponent(componentId, horizontal, vertical, table));
         }
 
         return new JpegFrame(width, height, progressive, components);
@@ -271,7 +298,7 @@ internal static class JpegDecoder
             if (wide > 1 || index > 3 || offset + 1 + size > body.Length)
                 throw new InvalidImageContentException("A JPEG quantisation table is malformed.");
 
-            var table = new int[64];
+            var table = DecodeContext.Allocate<int>(checked(64));
 
             for (var position = 0; position < 64; position++)
             {
